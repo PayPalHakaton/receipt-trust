@@ -108,22 +108,20 @@ function loadPayPal() {
     $('dd').onclick = async () => { await fetch('/api/demo-donation', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ amount: $('amt').value }) }); refresh(); };
     return;
   }
-  const s = document.createElement('script');
-  s.src = `https://www.paypal.com/sdk/js?client-id=${cfg.paypalClientId}&currency=USD&intent=capture`;
-  $('ppnote').textContent = 'Loading PayPal…';
-  s.onerror = () => { $('ppnote').textContent = 'Could not load the PayPal script (blocked by browser or network). Try another browser or disable content blockers.'; };
-  s.onload = () => { $('ppnote').textContent = ''; paypal.Buttons({
-    createOrder: async () => {
+  $('paypal').innerHTML = '<button class="p" id="pp" style="background:#ffc439;color:#111;font-weight:600">Donate with PayPal</button>';
+  $('pp').onclick = async () => {
+    $('pp').disabled = true; $('ppnote').textContent = 'Opening PayPal…';
+    try {
       const r = await fetch('/api/paypal/create-order', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ amount: $('amt').value }) });
-      const j = await r.json(); if (!j.id) throw new Error(j.error || 'order failed'); return j.id;
-    },
-    onApprove: async d => {
-      await fetch('/api/paypal/capture-order', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderID: d.orderID }) });
-      $('ppnote').textContent = 'Thank you! Sandbox donation received.'; refresh();
-    },
-    onError: err => { $('ppnote').textContent = 'PayPal error: ' + (err && err.message ? err.message : err); },
-  }).render('#paypal').catch(err => { $('ppnote').textContent = 'PayPal could not render: ' + (err && err.message ? err.message : err); }); };
-  document.head.appendChild(s);
+      const j = await r.json();
+      if (!j.approveUrl) throw new Error(j.error || 'order failed');
+      location.href = j.approveUrl;
+    } catch (e) { $('ppnote').textContent = 'PayPal error: ' + e.message; $('pp').disabled = false; }
+  };
+  const q = new URLSearchParams(location.search);
+  if (q.get('thanks')) $('ppnote').textContent = 'Thank you! Sandbox donation received.';
+  if (q.get('failed')) $('ppnote').textContent = 'The payment could not be completed.';
+  if (q.get('cancelled')) $('ppnote').textContent = 'Payment cancelled.';
 }
 
 (async () => {
