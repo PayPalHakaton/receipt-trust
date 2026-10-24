@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Receipt Trust</title>
+<style>
+  :root{--bg:#f6f3ee;--card:#fff;--ink:#1d2433;--mute:#6b7280;--ok:#1f8a5b;--bad:#c2410c;--acc:#264653;--line:#e5e1d8}
+  @media(prefers-color-scheme:dark){:root{--bg:#12161d;--card:#1a2029;--ink:#eef1f5;--mute:#98a2b3;--line:#2b3340;--acc:#7fb3c4}}
+  *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,sans-serif}
+  main{max-width:880px;margin:0 auto;padding:20px 16px 60px}
+  h1{font-size:1.7rem;margin:.2rem 0}h2{font-size:1.1rem;margin:0 0 .6rem}
+  .sub{color:var(--mute);margin:0 0 1rem}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin:14px 0}
+  .bar{height:12px;background:var(--line);border-radius:8px;overflow:hidden}.bar i{display:block;height:100%;background:var(--ok)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .stat{flex:1;min-width:130px}.stat b{display:block;font-size:1.4rem}
+  button,select,input{font:inherit;padding:9px 14px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+  button.p{background:var(--acc);color:#fff;border:0;cursor:pointer}button:disabled{opacity:.5}
+  .rc{border-top:1px solid var(--line);padding:12px 0}
+  .tag{font-size:.75rem;padding:2px 8px;border-radius:99px;color:#fff}.verified{background:var(--ok)}.flagged{background:var(--bad)}
+  .why{color:var(--bad);font-size:.9rem;margin:.2rem 0}.mute{color:var(--mute);font-size:.9rem}
+  .banner{background:#fff4d6;color:#5b4500;border-radius:10px;padding:8px 12px;font-size:.9rem}
+</style>
+</head>
+<body>
+<main>
+  <h1>🧾 Receipt Trust</h1>
+  <p class="sub">Every donation, backed by a receipt an AI has read and checked against the promise made to donors.</p>
+  <div class="banner">Demo with fictional organisation and data. Payments use the PayPal <b>Sandbox</b> — no real money.</div>
+
+  <section class="card">
+    <h2 id="title"></h2><div class="mute" id="org"></div>
+    <div class="bar" style="margin:12px 0"><i id="fill" style="width:0"></i></div>
+    <div class="row">
+      <div class="stat"><span class="mute">Raised</span><b id="raised">$0</b></div>
+      <div class="stat"><span class="mute">Goal</span><b id="goal"></b></div>
+      <div class="stat"><span class="mute">Spent &amp; verified</span><b id="spent">$0</b></div>
+      <div class="stat"><span class="mute">Flagged receipts</span><b id="flag">0</b></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>1 · Donor: give through PayPal</h2>
+    <div class="row">
+      <select id="amt"><option>5</option><option selected>10</option><option>25</option><option>50</option></select>
+      <span class="mute">USD</span>
+    </div>
+    <div id="paypal" style="max-width:340px;margin-top:12px"></div>
+    <div id="ppnote" class="mute"></div>
+  </section>
+
+  <section class="card">
+    <h2>2 · Volunteer: upload a receipt</h2>
+    <div class="row">
+      <input type="text" id="vol" placeholder="Your name" value="Olena">
+      <input type="file" id="file" accept="image/*">
+      <button class="p" id="send">Read &amp; check receipt</button>
+    </div>
+    <div class="mute" id="aimode" style="margin-top:8px"></div>
+    <div id="demobtns" class="row" style="margin-top:8px"></div>
+  </section>
+
+  <section class="card">
+    <h2>3 · Public report</h2>
+    <div id="list" class="mute">No receipts yet.</div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const usd = n => '$' + Number(n).toFixed(2);
+let cfg = {};
+
+async function refresh() {
+  const s = await (await fetch('/api/summary')).json();
+  $('title').textContent = s.campaign.title; $('org').textContent = s.campaign.org;
+  $('raised').textContent = usd(s.raised); $('goal').textContent = usd(s.campaign.goal);
+  $('spent').textContent = usd(s.verifiedSpent); $('flag').textContent = s.flaggedCount;
+  $('fill').style.width = Math.min(100, s.raised / s.campaign.goal * 100) + '%';
+  $('list').innerHTML = s.receipts.length ? s.receipts.map(r => `
+    <div class="rc">
+      <div class="row"><b>${esc(r.merchant)}</b><span class="mute">${esc(r.date)} · by ${esc(r.volunteer)}</span>
+        <span class="tag ${r.status}">${r.status}</span><b style="margin-left:auto">${usd(r.total)}</b></div>
+      <div class="mute">${r.items.map(i => `${esc(i.name)} (${esc(i.category)})`).join(', ')}</div>
+      ${r.reasons.map(x => `<div class="why">⚠ ${esc(x)}</div>`).join('')}
+    </div>`).join('') : 'No receipts yet.';
+}
+function esc(t){return String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+
+function toBase64(file) {
+  return new Promise(res => { const f = new FileReader(); f.onload = () => res(f.result.split(',')[1]); f.readAsDataURL(file); });
+}
+async function upload(body) {
+  $('send').disabled = true;
+  const r = await fetch('/api/receipts', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ volunteer: $('vol').value, ...body }) });
+  const j = await r.json(); if (!r.ok) alert(j.error);
+  $('send').disabled = false; refresh();
+}
+$('send').onclick = async () => {
+  const f = $('file').files[0];
+  if (!f && cfg.aiReady) return alert('Choose a receipt photo first.');
+  upload(f ? { image: await toBase64(f), mediaType: f.type } : {});
+};
+
+function loadPayPal() {
+  if (!cfg.paypalReady) {
+    $('ppnote').innerHTML = 'PayPal Sandbox keys are not set. <button id="dd">Record a demo donation</button>';
+    $('dd').onclick = async () => { await fetch('/api/demo-donation', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ amount: $('amt').value }) }); refresh(); };
+    return;
+  }
+  const s = document.createElement('script');
+  s.src = `https://www.paypal.com/sdk/js?client-id=${cfg.paypalClientId}&currency=USD&intent=capture`;
+  s.onload = () => paypal.Buttons({
+    createOrder: async () => {
+      const r = await fetch('/api/paypal/create-order', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ amount: $('amt').value }) });
+      const j = await r.json(); if (!j.id) throw new Error(j.error || 'order failed'); return j.id;
+    },
+    onApprove: async d => {
+      await fetch('/api/paypal/capture-order', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderID: d.orderID }) });
+      $('ppnote').textContent = 'Thank you! Sandbox donation received.'; refresh();
+    },
+  }).render('#paypal');
+  document.head.appendChild(s);
+}
+
+(async () => {
+  cfg = await (await fetch('/api/config')).json();
+  $('aimode').textContent = cfg.aiReady ? 'AI mode: Claude reads your photo.' : 'Demo mode (no AI key): pick a sample receipt below.';
+  if (!cfg.aiReady) {
+    $('demobtns').innerHTML = '<button id="g">Sample: blankets &amp; food (honest)</button><button id="b">Sample: cocktails (suspicious)</button>';
+    $('g').onclick = () => upload({ demoVariant: 'good' }); $('b').onclick = () => upload({ demoVariant: 'bad' });
+  }
+  loadPayPal(); refresh();
+})();
+</script>
+</body>
+</html>
