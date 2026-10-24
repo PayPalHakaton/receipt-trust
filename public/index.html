@@ -110,7 +110,9 @@ function loadPayPal() {
   }
   const s = document.createElement('script');
   s.src = `https://www.paypal.com/sdk/js?client-id=${cfg.paypalClientId}&currency=USD&intent=capture`;
-  s.onload = () => paypal.Buttons({
+  $('ppnote').textContent = 'Loading PayPal…';
+  s.onerror = () => { $('ppnote').textContent = 'Could not load the PayPal script (blocked by browser or network). Try another browser or disable content blockers.'; };
+  s.onload = () => { $('ppnote').textContent = ''; paypal.Buttons({
     createOrder: async () => {
       const r = await fetch('/api/paypal/create-order', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ amount: $('amt').value }) });
       const j = await r.json(); if (!j.id) throw new Error(j.error || 'order failed'); return j.id;
@@ -119,7 +121,8 @@ function loadPayPal() {
       await fetch('/api/paypal/capture-order', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderID: d.orderID }) });
       $('ppnote').textContent = 'Thank you! Sandbox donation received.'; refresh();
     },
-  }).render('#paypal');
+    onError: err => { $('ppnote').textContent = 'PayPal error: ' + (err && err.message ? err.message : err); },
+  }).render('#paypal').catch(err => { $('ppnote').textContent = 'PayPal could not render: ' + (err && err.message ? err.message : err); }); };
   document.head.appendChild(s);
 }
 
