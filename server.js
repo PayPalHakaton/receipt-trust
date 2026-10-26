@@ -117,6 +117,19 @@ const readBody = (req) => new Promise((resolve, reject) => {
 });
 const send = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
 
+async function captureOrder(orderID) {
+  const token = await ppToken();
+  const r = await fetch(`${PP_BASE}/v2/checkout/orders/${encodeURIComponent(orderID)}/capture`, {
+    method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' } });
+  const data = await r.json();
+  const cap = data?.purchase_units?.[0]?.payments?.captures?.[0];
+  if (r.ok && cap && cap.status === 'COMPLETED' && !donations.find(d => d.id === cap.id)) {
+    donations.unshift({ id: cap.id, amount: Number(cap.amount.value), donor: data.payer?.name?.given_name || 'Anonymous',
+      at: new Date().toISOString() });
+  }
+  return !!(cap && cap.status === 'COMPLETED');
+}
+
 const routes = {
   'GET /api/config': async () => [200, { paypalClientId: PP_ID, paypalReady: !!(PP_ID && PP_SECRET), aiReady: !!AI_KEY }],
   'GET /api/summary': async () => [200, summary()],
@@ -132,31 +145,25 @@ const routes = {
     return [200, rec];
   },
 
-  'POST /api/paypal/create-order': async (body) => {
+  'POST /api/paypal/create-order': async (body, req) => {
     const amount = money(Number(body.amount));
     if (!(amount >= 1 && amount <= 1000)) return [400, { error: 'Amount must be 1-1000' }];
     const token = await ppToken();
+    const base = process.env.PUBLIC_URL || `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`;
     const r = await fetch(PP_BASE + '/v2/checkout/orders', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ intent: 'CAPTURE', purchase_units: [{
-        description: campaign.title, custom_id: campaign.id,
-        amount: { currency_code: campaign.currency, value: amount.toFixed(2) } }] }),
+      body: JSON.stringify({ intent: 'CAPTURE',
+        purchase_units: [{ description: campaign.title, custom_id: campaign.id,
+          amount: { currency_code: campaign.currency, value: amount.toFixed(2) } }],
+        payment_source: { paypal: { experience_context: {
+          brand_name: 'Receipt Trust (demo)', user_action: 'PAY_NOW', shipping_preference: 'NO_SHIPPING',
+          return_url: base + '/paypal/return', cancel_url: base + '/?cancelled=1' } } } }),
     });
-    return [r.status, await r.json()];
-  },
-
-  'POST /api/paypal/capture-order': async (body) => {
-    const token = await ppToken();
-    const r = await fetch(`${PP_BASE}/v2/checkout/orders/${encodeURIComponent(body.orderID)}/capture`, {
-      method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' } });
     const data = await r.json();
-    const cap = data?.purchase_units?.[0]?.payments?.captures?.[0];
-    if (r.ok && cap && cap.status === 'COMPLETED') {
-      donations.unshift({ id: cap.id, amount: Number(cap.amount.value), donor: data.payer?.name?.given_name || 'Anonymous',
-        at: new Date().toISOString() });
-    }
-    return [r.status, data];
+    const link = (data.links || []).find(l => l.rel === 'payer-action' || l.rel === 'approve');
+    if (!r.ok || !link) return [r.ok ? 500 : r.status, { error: 'PayPal order failed', details: data }];
+    return [200, { id: data.id, approveUrl: link.href }];
   },
 
   // Demo helper: only works when PayPal credentials are NOT configured.
@@ -169,9 +176,14 @@ const routes = {
 
 http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
+  if (req.method === 'GET' && url.pathname === '/paypal/return') {
+    try { const ok = await captureOrder(url.searchParams.get('token')); res.writeHead(302, { Location: ok ? '/?thanks=1' : '/?failed=1' }); }
+    catch (e) { res.writeHead(302, { Location: '/?failed=1' }); }
+    return res.end();
+  }
   const handler = routes[req.method + ' ' + url.pathname];
   if (handler) {
-    try { const [code, obj] = await handler(req.method === 'POST' ? await readBody(req) : {}); send(res, code, obj); }
+    try { const [code, obj] = await handler(req.method === 'POST' ? await readBody(req) : {}, req); send(res, code, obj); }
     catch (e) { send(res, 500, { error: e.message }); }
     return;
   }
